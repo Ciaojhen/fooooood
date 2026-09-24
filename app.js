@@ -140,6 +140,7 @@ function sanitize(input, existing) {
     notes: str(input.notes, 5000),
     rating: Math.min(5, Math.max(0, Math.round(Number(input.rating) || 0))),
     favorite: Boolean(input.favorite),
+    emoji: str(input.emoji, 16),
     cookLog: existing?.cookLog ?? [],
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -212,7 +213,7 @@ function hydrateImages(root = app) {
   $$('img[data-img]', root).forEach(async (el) => {
     const url = await imageUrl(el.dataset.img);
     if (url) el.src = url;
-    else el.replaceWith(Object.assign(document.createElement('div'), { className: 'placeholder', textContent: '🍽️' }));
+    else el.outerHTML = placeholder(el.dataset.emoji);
   });
 }
 // 清掉沒有被任何食譜使用的照片（例如新增時上傳了照片卻按取消）
@@ -362,7 +363,68 @@ const stars = (n) => `<span class="stars">${'★'.repeat(n)}<span class="off">${
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit' });
 const SHARE_ICON = `<svg class="share-icon" viewBox="0 0 24 24" aria-label="分享圖示"><path d="M12 3v12M7.5 7.5 12 3l4.5 4.5M8 10H6v10h12V10h-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const GOOGLE_ICON = `<svg viewBox="0 0 48 48" width="20" height="20" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>`;
-const photo = (id, alt = '') => (id ? `<img data-img="${esc(id)}" alt="${esc(alt)}" />` : '<div class="placeholder">🍽️</div>');
+const placeholder = (emoji) =>
+  emoji ? `<div class="placeholder chosen">${esc(emoji)}</div>` : '<div class="placeholder">🍽️</div>';
+const photo = (id, alt = '', emoji = '') =>
+  id ? `<img data-img="${esc(id)}" data-emoji="${esc(emoji)}" alt="${esc(alt)}" />` : placeholder(emoji);
+// 黑白線條圖示（顏色跟著文字色，淺色模式是黑、深色模式是白）
+const svgIcon = (paths, fill = 'none') =>
+  `<svg viewBox="0 0 24 24" width="22" height="22" fill="${fill}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const HEART_PATH = '<path d="M12 20.5s-7.5-4.6-9.2-9.3C1.6 7.8 3.9 4.5 7.3 4.5c2 0 3.6 1.1 4.7 2.8 1.1-1.7 2.7-2.8 4.7-2.8 3.4 0 5.7 3.3 4.5 6.7-1.7 4.7-9.2 9.3-9.2 9.3z"/>';
+const ICONS = {
+  heart: svgIcon(HEART_PATH),
+  heartFilled: svgIcon(HEART_PATH, 'currentColor'),
+  pencil: svgIcon('<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/><path d="M14.5 5.5l3 3"/>'),
+  trash: svgIcon('<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V7"/>'),
+};
+
+// 從畫面下方滑出的選單（像 iPhone 的動作選單）
+function actionSheet(options) {
+  const el = document.createElement('div');
+  el.className = 'sheet-backdrop';
+  el.innerHTML = `
+    <div class="sheet" role="dialog">
+      <div class="sheet-group">${options.map((o, i) => `<button type="button" data-i="${i}" class="${o.danger ? 'danger' : ''}">${o.label}</button>`).join('')}</div>
+      <div class="sheet-group"><button type="button" class="cancel">取消</button></div>
+    </div>`;
+  const close = () => el.remove();
+  el.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn && e.target !== el) return;
+    close();
+    // 在同一次點擊裡呼叫，iPhone 才允許打開相機 / 相簿 / 鍵盤
+    if (btn?.dataset.i) options[btn.dataset.i].onSelect();
+  });
+  document.body.append(el);
+}
+
+// 叫出手機鍵盤讓使用者挑一個 emoji
+function emojiPrompt(onPick) {
+  const el = document.createElement('div');
+  el.className = 'sheet-backdrop';
+  el.innerHTML = `
+    <div class="sheet emoji-sheet" role="dialog">
+      <div class="sheet-group">
+        <p>選一個 emoji 當封面</p>
+        <input class="emoji-input" inputmode="text" autocomplete="off" aria-label="輸入 emoji" />
+        <p class="hint">點鍵盤左下角的 😀 或 🌐 切換到 emoji 鍵盤</p>
+      </div>
+      <div class="sheet-group"><button type="button" class="cancel">取消</button></div>
+    </div>`;
+  const input = $('.emoji-input', el);
+  const close = () => el.remove();
+  el.addEventListener('click', (e) => { if (e.target === el || e.target.closest('.cancel')) close(); });
+  input.addEventListener('input', () => {
+    const chars = window.Intl?.Segmenter
+      ? [...new Intl.Segmenter().segment(input.value)].map((s) => s.segment)
+      : [...input.value];
+    const emoji = chars.reverse().find((c) => /\p{Extended_Pictographic}/u.test(c));
+    if (emoji) { close(); onPick(emoji); }
+    else input.value = '';
+  });
+  document.body.append(el);
+  input.focus();
+}
 
 // 份量縮放：把開頭的數字（含分數）乘上倍率，例如 "200g" → "400g"、"1/2 杯" → "1 杯"
 function scaleAmount(amount, factor) {
@@ -430,11 +492,11 @@ function bindBanners() {
 
 // ---------- 登入頁 ----------
 function renderLogin() {
-  document.title = 'FooooooD 食譜本';
+  document.title = 'Eat, Pray, Not Burn';
   app.innerHTML = `
     <div class="login">
       <img src="icons/icon-192.png" alt="" class="login-logo" />
-      <h1>FooooooD 食譜本</h1>
+      <h1>Eat, Pray, Not Burn</h1>
       <p>記錄你做菜的每一道食譜<br />電腦和手機自動同步</p>
       <button class="btn google" id="google">${GOOGLE_ICON} 使用 Google 帳號登入</button>
       <p class="small-print">只有你自己看得到你的食譜</p>
@@ -458,7 +520,7 @@ function renderNotConfigured() {
 
 // ---------- 列表頁 ----------
 function renderList() {
-  document.title = 'FooooooD 食譜本';
+  document.title = 'Eat, Pray, Not Burn';
   if (!recipes.length) {
     app.innerHTML = `
       ${banners()}
@@ -488,7 +550,7 @@ function renderList() {
     </div>
     <div class="chips">
       <button class="chip ${!filters.category && !filters.favOnly ? 'active' : ''}" data-cat="">全部</button>
-      <button class="chip ${filters.favOnly ? 'active' : ''}" data-fav>❤️ 我的最愛</button>
+      <button class="chip ${filters.favOnly ? 'active' : ''}" data-fav title="我的最愛" aria-label="我的最愛">❤️</button>
       ${cats.map((c) => `<button class="chip ${filters.category === c ? 'active' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}
     </div>
     <div class="grid"></div>`;
@@ -527,7 +589,7 @@ function renderGrid() {
     ? list.map((r) => `
       <a class="card" href="#/recipe/${r.id}">
         <div class="card-img">
-          ${photo(r.image)}
+          ${photo(r.image, '', r.emoji)}
           ${r.favorite ? '<span class="card-fav">❤️</span>' : ''}
         </div>
         <div class="card-body">
@@ -545,14 +607,21 @@ function renderGrid() {
 
 // ---------- 詳細頁 ----------
 function renderDetail(r) {
-  document.title = `${r.title} · FooooooD`;
+  document.title = `${r.title} · Eat, Pray, Not Burn`;
   let servings = r.servings;
   const lastCooked = r.cookLog.at(-1);
 
   app.innerHTML = `
-    <a href="#/" class="back">← 回到食譜本</a>
+    <div class="detail-top">
+      <a href="#/" class="back">← 回到食譜本</a>
+      <div class="detail-tools">
+        <button class="tool" id="fav" title="${r.favorite ? '從最愛移除' : '加入最愛'}" aria-label="${r.favorite ? '從最愛移除' : '加入最愛'}" aria-pressed="${r.favorite}">${r.favorite ? ICONS.heartFilled : ICONS.heart}</button>
+        <a class="tool" href="#/edit/${r.id}" title="編輯" aria-label="編輯">${ICONS.pencil}</a>
+        <button class="tool" id="del" title="刪除" aria-label="刪除">${ICONS.trash}</button>
+      </div>
+    </div>
     <section class="detail-hero">
-      <div class="photo">${photo(r.image, r.title)}</div>
+      <div class="photo">${photo(r.image, r.title, r.emoji)}</div>
       <div>
         <h1>${esc(r.title)}</h1>
         ${r.rating ? stars(r.rating) : ''}
@@ -568,9 +637,6 @@ function renderDetail(r) {
         </div>
         <div class="actions">
           <button class="btn primary" id="cooked">🔥 今天做了這道</button>
-          <button class="btn" id="fav">${r.favorite ? '❤️ 已收藏' : '🤍 加入最愛'}</button>
-          <a class="btn" href="#/edit/${r.id}">✏️ 編輯</a>
-          <button class="btn danger" id="del">🗑 刪除</button>
         </div>
         ${lastCooked ? `<div class="cooklog">上次做：${fmtDate(lastCooked)}</div>` : ''}
       </div>
@@ -637,10 +703,10 @@ function renderForm(r) {
   const draft = r
     ? structuredClone(r)
     : { title: '', image: null, category: '', tags: [], servings: 2, prepMinutes: '', cookMinutes: '',
-        ingredients: [], steps: [], notes: '', rating: 0, favorite: false };
+        ingredients: [], steps: [], notes: '', rating: 0, favorite: false, emoji: '' };
   if (!draft.ingredients.length) draft.ingredients.push({ name: '', amount: '' });
   if (!draft.steps.length) draft.steps.push('');
-  document.title = `${editing ? '編輯' : '新增'}食譜 · FooooooD`;
+  document.title = `${editing ? '編輯' : '新增'}食譜 · Eat, Pray, Not Burn`;
 
   app.innerHTML = `
     <a href="${editing ? `#/recipe/${r.id}` : '#/'}" class="back">← 取消</a>
@@ -648,11 +714,12 @@ function renderForm(r) {
       <h1>${editing ? '編輯食譜' : '新增食譜'}</h1>
 
       <div class="field">
-        <span class="label">成品照片</span>
-        <label class="photo-drop" id="drop">
-          <input type="file" accept="image/*" hidden id="file" />
-          <span id="drop-text">📷 點擊拍照或選擇照片</span>
-        </label>
+        <span class="label">封面</span>
+        <button type="button" class="photo-drop" id="drop">
+          <span id="drop-text">📷 點一下加入照片或 emoji</span>
+        </button>
+        <input type="file" accept="image/*" capture="environment" hidden id="file-camera" />
+        <input type="file" accept="image/*" hidden id="file-library" />
       </div>
 
       <div class="field">
@@ -718,26 +785,40 @@ function renderForm(r) {
   // --- 照片 ---
   const drop = $('#drop');
   const renderPhoto = () => {
-    $$('img, .placeholder, .remove', drop).forEach((el) => el.remove());
-    $('#drop-text').hidden = Boolean(draft.image);
-    if (!draft.image) return;
-    drop.insertAdjacentHTML('beforeend',
-      `${photo(draft.image)}<button type="button" class="btn small remove">✕ 移除照片</button>`);
-    hydrateImages(drop);
-    $('.remove', drop).onclick = (e) => { e.preventDefault(); draft.image = null; renderPhoto(); };
+    $$('img, .placeholder', drop).forEach((el) => el.remove());
+    $('#drop-text').hidden = Boolean(draft.image || draft.emoji);
+    if (draft.image) {
+      drop.insertAdjacentHTML('beforeend', photo(draft.image));
+      hydrateImages(drop);
+    } else if (draft.emoji) {
+      drop.insertAdjacentHTML('beforeend', placeholder(draft.emoji));
+    }
   };
   const handleFile = async (file) => {
     if (!file?.type.startsWith('image/')) return toast('請選擇圖片檔');
     $('#drop-text').textContent = '⏳ 處理中…';
     try {
       draft.image = (await api.upload(await resizeImage(file))).id;
+      draft.emoji = '';
     } catch (err) {
       toast(`照片處理失敗：${friendly(err)}`);
     }
-    $('#drop-text').textContent = '📷 點擊拍照或選擇照片';
+    $('#drop-text').textContent = '📷 點一下加入照片或 emoji';
     renderPhoto();
   };
-  $('#file').onchange = (e) => handleFile(e.target.files[0]);
+  $$('#file-camera, #file-library').forEach((input) => {
+    input.onchange = (e) => { handleFile(e.target.files[0]); e.target.value = ''; };
+  });
+  drop.addEventListener('click', () =>
+    actionSheet([
+      { label: '📷 拍照', onSelect: () => $('#file-camera').click() },
+      { label: '🖼️ 從相簿選擇', onSelect: () => $('#file-library').click() },
+      { label: '😀 選擇 emoji', onSelect: () => emojiPrompt((emoji) => { draft.emoji = emoji; draft.image = null; renderPhoto(); }) },
+      ...(draft.image || draft.emoji
+        ? [{ label: '移除封面', danger: true, onSelect: () => { draft.image = null; draft.emoji = ''; renderPhoto(); } }]
+        : []),
+    ]),
+  );
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
   drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag'); handleFile(e.dataTransfer.files[0]); });
@@ -833,7 +914,7 @@ function renderForm(r) {
 
 // ---------- 帳號與設定頁 ----------
 function renderSettings() {
-  document.title = '帳號與設定 · FooooooD';
+  document.title = '帳號與設定 · Eat, Pray, Not Burn';
   const meta = user.user_metadata || {};
   app.innerHTML = `
     <a href="#/" class="back">← 回到食譜本</a>
@@ -873,7 +954,7 @@ function renderSettings() {
           <li>用 <b>Safari</b> 打開這個網址</li>
           <li>點畫面下方的 <b>分享</b> 按鈕 ${SHARE_ICON}</li>
           <li>往下滑，選 <b>加入主畫面</b></li>
-          <li>從主畫面的「食譜本」圖示打開，再用 Google 登入一次</li>
+          <li>從主畫面的「Eat, Pray, Not Burn」圖示打開，再用 Google 登入一次</li>
         </ol>
       </div>`}
     </div>`;
