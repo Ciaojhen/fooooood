@@ -948,7 +948,14 @@ document.addEventListener('visibilitychange', async () => {
 // 按鈕操作失敗（例如沒網路）時統一顯示提示
 window.addEventListener('unhandledrejection', (e) => toast(`操作失敗：${friendly(e.reason)}`));
 window.addEventListener('hashchange', route);
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  // 有新版 App 裝好時自動重新載入，不用關掉再開
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !isEditing()) location.reload();
+  });
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 
 (async () => {
   if (!configured) return renderNotConfigured();
