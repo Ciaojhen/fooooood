@@ -225,6 +225,18 @@ main {
 .install-steps li { margin-bottom: 6px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
+/* ---------- 登入頁 ---------- */
+body.signed-out .topbar nav { display: none; }
+.login { max-width: 360px; margin: 8vh auto 0; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.login-logo { width: 96px; height: 96px; border-radius: 22px; box-shadow: var(--shadow); margin-bottom: 12px; }
+.login h1 { margin: 0; font-size: 1.7rem; }
+.login p { color: var(--muted); margin: 4px 0 24px; }
+.btn.google { background: #fff; color: #1f1f1f; border-color: #dadce0; padding: 12px 24px; font-size: 1rem; font-weight: 600; gap: 10px; width: 100%; }
+.btn.google:hover { background: #f7f8f8; }
+.account { display: flex; align-items: center; gap: 12px; }
+.account img { width: 48px; height: 48px; border-radius: 50%; }
+.banner .btn.small { flex-shrink: 0; }
+
 @media (max-width: 760px) {
   .detail-hero, .detail-body { grid-template-columns: 1fr; }
   .detail-hero { gap: 16px; margin-bottom: 20px; }

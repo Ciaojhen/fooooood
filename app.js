@@ -1,18 +1,76 @@
 // FooooooD 食譜本 — 前端（原生 JS，hash 路由）
-// 所有資料都存在這支手機 / 這個瀏覽器的 IndexedDB 裡，不會上傳到任何伺服器
+// 資料存在雲端（Supabase），用 Google 帳號登入後電腦和手機自動同步；
+// 另外在本機（IndexedDB）留一份快取，沒網路時也能看食譜。
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const uuid = () =>
-  crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  crypto.randomUUID?.() ??
+  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) =>
+    ((c === 'x' ? Math.random() * 16 : (Math.random() * 4) | 8) | 0).toString(16));
+const isUuid = (s) => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 const app = $('#app');
 
-// ---------- 本機資料庫（IndexedDB） ----------
-let dbPromise;
-function openDb() {
-  dbPromise ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open('fooooood', 1);
+// ---------- Supabase ----------
+const CFG = window.FOOD_CONFIG || {};
+const configured = Boolean(CFG.SUPABASE_URL && CFG.SUPABASE_KEY);
+const sb = configured
+  ? supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_KEY, {
+      auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    })
+  : null;
+const BUCKET = 'recipe-images';
+let user = null;
+
+function friendly(err) {
+  const msg = err?.message || String(err);
+  if (!navigator.onLine || /fetch|Load failed|network/i.test(msg)) return '沒有網路，請連線後再試';
+  return msg;
+}
+
+const cloud = {
+  async list() {
+    const { data, error } = await sb.from('recipes').select('data');
+    if (error) throw error;
+    return data.map((row) => row.data);
+  },
+  async save(r) {
+    const { error } = await sb.from('recipes').upsert({ id: r.id, data: r, updated_at: r.updatedAt });
+    if (error) throw error;
+  },
+  async remove(id) {
+    const { error } = await sb.from('recipes').delete().eq('id', id);
+    if (error) throw error;
+  },
+  async uploadImage(blob) {
+    const ext = { 'image/png': 'png', 'image/webp': 'webp' }[blob.type] || 'jpg';
+    const path = `${user.id}/${uuid()}.${ext}`;
+    const { error } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: blob.type, cacheControl: '31536000' });
+    if (error) throw error;
+    return path;
+  },
+  async downloadImage(path) {
+    const { data, error } = await sb.storage.from(BUCKET).download(path);
+    if (error) throw error;
+    return data;
+  },
+  async removeImages(paths) {
+    if (!paths.length) return;
+    const { error } = await sb.storage.from(BUCKET).remove(paths);
+    if (error) throw error;
+  },
+  async listImages() {
+    const { data, error } = await sb.storage.from(BUCKET).list(user.id, { limit: 1000 });
+    if (error) throw error;
+    return data.filter((f) => !f.name.startsWith('.')).map((f) => ({ path: `${user.id}/${f.name}`, createdAt: f.created_at }));
+  },
+};
+
+// ---------- 本機 IndexedDB ----------
+function openIdb(name) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(name, 1);
     req.onupgradeneeded = () => {
       req.result.createObjectStore('recipes', { keyPath: 'id' });
       req.result.createObjectStore('images', { keyPath: 'id' }); // { id, type, data: ArrayBuffer }
@@ -20,10 +78,9 @@ function openDb() {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
-  return dbPromise;
 }
-async function tx(store, mode, fn) {
-  const db = await openDb();
+async function tx(dbPromise, store, mode, fn) {
+  const db = await dbPromise;
   return new Promise((resolve, reject) => {
     const t = db.transaction(store, mode);
     const req = fn(t.objectStore(store));
@@ -31,16 +88,34 @@ async function tx(store, mode, fn) {
     t.onerror = t.onabort = () => reject(t.error);
   });
 }
-const db = {
-  allRecipes: () => tx('recipes', 'readonly', (s) => s.getAll()),
-  putRecipe: (r) => tx('recipes', 'readwrite', (s) => s.put(r)),
-  deleteRecipe: (id) => tx('recipes', 'readwrite', (s) => s.delete(id)),
-  getImage: (id) => tx('images', 'readonly', (s) => s.get(id)),
-  putImage: (img) => tx('images', 'readwrite', (s) => s.put(img)),
-  deleteImage: (id) => tx('images', 'readwrite', (s) => s.delete(id)),
-  allImages: () => tx('images', 'readonly', (s) => s.getAll()),
-  imageIds: () => tx('images', 'readonly', (s) => s.getAllKeys()),
-};
+function idbStore(name) {
+  let dbPromise;
+  const db = () => (dbPromise ??= openIdb(name));
+  return {
+    allRecipes: () => tx(db(), 'recipes', 'readonly', (s) => s.getAll()),
+    putRecipe: (r) => tx(db(), 'recipes', 'readwrite', (s) => s.put(r)),
+    deleteRecipe: (id) => tx(db(), 'recipes', 'readwrite', (s) => s.delete(id)),
+    replaceRecipes: (list) => tx(db(), 'recipes', 'readwrite', (s) => { s.clear(); list.forEach((r) => s.put(r)); }),
+    getImage: (id) => tx(db(), 'images', 'readonly', (s) => s.get(id)),
+    putImage: (img) => tx(db(), 'images', 'readwrite', (s) => s.put(img)),
+    deleteImage: (id) => tx(db(), 'images', 'readwrite', (s) => s.delete(id)),
+    imageIds: () => tx(db(), 'images', 'readonly', (s) => s.getAllKeys()),
+    async clear() {
+      await tx(db(), 'recipes', 'readwrite', (s) => s.clear());
+      await tx(db(), 'images', 'readwrite', (s) => s.clear());
+    },
+    async destroy() {
+      (await db()).close();
+      dbPromise = null;
+      await new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = req.onerror = req.onblocked = resolve;
+      });
+    },
+  };
+}
+const cache = idbStore('fooooood-cloud'); // 雲端資料的本機快取
+const legacy = idbStore('fooooood'); // 舊版（只存在手機裡）的資料，登入後可以搬上雲端
 
 function sanitize(input, existing) {
   const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -52,7 +127,7 @@ function sanitize(input, existing) {
   return {
     id: existing?.id ?? uuid(),
     title: str(input.title, 100) || '未命名料理',
-    image: typeof input.image === 'string' && input.image.length <= 64 ? input.image : null,
+    image: typeof input.image === 'string' && input.image.length <= 200 ? input.image : null,
     category: str(input.category, 30),
     tags: Array.isArray(input.tags) ? input.tags.map((t) => str(t, 20)).filter(Boolean).slice(0, 20) : [],
     servings: num(input.servings),
@@ -71,53 +146,68 @@ function sanitize(input, existing) {
   };
 }
 
+// 先寫雲端，成功後再更新本機快取；沒網路時會丟出錯誤，不會出現兩邊不一致
 const api = {
-  list: db.allRecipes,
   async create(input) {
     const r = sanitize(input);
-    await db.putRecipe(r);
+    await cloud.save(r);
+    await cache.putRecipe(r);
     return r;
   },
   async update(id, input) {
     const existing = findRecipe(id);
     const r = sanitize(input, existing);
-    await db.putRecipe(r);
+    await cloud.save(r);
+    await cache.putRecipe(r);
     if (existing.image && existing.image !== r.image) await removeImage(existing.image);
     return r;
   },
   async remove(id) {
     const r = findRecipe(id);
-    await db.deleteRecipe(id);
+    await cloud.remove(id);
+    await cache.deleteRecipe(id);
     if (r?.image) await removeImage(r.image);
   },
   async cooked(id) {
     const r = { ...findRecipe(id) };
     r.cookLog = [...r.cookLog, new Date().toISOString()];
-    await db.putRecipe(r);
+    await cloud.save(r);
+    await cache.putRecipe(r);
     return r;
   },
   async upload(blob) {
-    const id = uuid();
-    await db.putImage({ id, type: blob.type, data: await blob.arrayBuffer() });
-    return { id };
+    const path = await cloud.uploadImage(blob);
+    await cache.putImage({ id: path, type: blob.type, data: await blob.arrayBuffer() });
+    return { id: path };
   },
 };
 
 // ---------- 照片 ----------
 const imageUrls = new Map();
-async function imageUrl(id) {
-  if (!imageUrls.has(id)) {
-    const img = await db.getImage(id);
-    imageUrls.set(id, img ? URL.createObjectURL(new Blob([img.data], { type: img.type })) : '');
+async function imageBlob(path) {
+  const cached = await cache.getImage(path);
+  if (cached) return new Blob([cached.data], { type: cached.type });
+  const blob = await cloud.downloadImage(path);
+  await cache.putImage({ id: path, type: blob.type, data: await blob.arrayBuffer() });
+  return blob;
+}
+async function imageUrl(path) {
+  if (!imageUrls.has(path)) {
+    try {
+      imageUrls.set(path, URL.createObjectURL(await imageBlob(path)));
+    } catch {
+      return ''; // 沒網路或照片不存在，下次再試
+    }
   }
-  return imageUrls.get(id);
+  return imageUrls.get(path);
 }
-async function removeImage(id) {
-  await db.deleteImage(id);
-  if (imageUrls.get(id)) URL.revokeObjectURL(imageUrls.get(id));
-  imageUrls.delete(id);
+async function removeImage(path) {
+  await cloud.removeImages([path]).catch(() => {}); // 失敗的話之後 cleanupImages 會再清
+  await cache.deleteImage(path);
+  if (imageUrls.get(path)) URL.revokeObjectURL(imageUrls.get(path));
+  imageUrls.delete(path);
 }
-// 模板裡用 <img data-img="id">，渲染完再補上實際圖片網址
+// 模板裡用 <img data-img="path">，渲染完再補上實際圖片網址
 function hydrateImages(root = app) {
   $$('img[data-img]', root).forEach(async (el) => {
     const url = await imageUrl(el.dataset.img);
@@ -126,9 +216,15 @@ function hydrateImages(root = app) {
   });
 }
 // 清掉沒有被任何食譜使用的照片（例如新增時上傳了照片卻按取消）
+// 只刪超過一天的，避免刪到另一台裝置正在編輯、還沒儲存的照片
 async function cleanupImages() {
   const used = new Set(recipes.map((r) => r.image).filter(Boolean));
-  for (const id of await db.imageIds()) if (!used.has(id)) await db.deleteImage(id);
+  const dayAgo = Date.now() - 86400000;
+  const orphans = (await cloud.listImages())
+    .filter((f) => !used.has(f.path) && Date.parse(f.createdAt) < dayAgo)
+    .map((f) => f.path);
+  await cloud.removeImages(orphans);
+  for (const id of await cache.imageIds()) if (!used.has(id)) await cache.deleteImage(id);
 }
 
 // 上傳前把照片縮到最長邊 1600px，存 JPEG 省空間
@@ -142,7 +238,7 @@ async function resizeImage(file, max = 1600) {
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b || file), 'image/jpeg', 0.85));
 }
 
-// ---------- 備份 ----------
+// ---------- 備份 / 匯入 / 舊資料搬家 ----------
 const store = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
@@ -153,13 +249,11 @@ const blobToDataUrl = (blob) =>
     reader.onload = () => resolve(reader.result);
     reader.readAsDataURL(blob);
   });
-const daysSince = (iso) => (iso ? Math.floor((Date.now() - Date.parse(iso)) / 86400000) : Infinity);
+const validDate = (s) => typeof s === 'string' && !Number.isNaN(Date.parse(s));
 
 async function exportBackup() {
   const images = {};
-  const used = new Set(recipes.map((r) => r.image));
-  for (const img of await db.allImages())
-    if (used.has(img.id)) images[img.id] = await blobToDataUrl(new Blob([img.data], { type: img.type }));
+  for (const r of recipes) if (r.image) images[r.image] = await blobToDataUrl(await imageBlob(r.image));
   const json = JSON.stringify({ app: 'fooooood', version: 1, exportedAt: new Date().toISOString(), recipes, images });
   const name = `食譜備份-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([json], name, { type: 'application/json' });
@@ -168,8 +262,7 @@ async function exportBackup() {
   if (navigator.canShare?.({ files: [file] })) {
     try {
       await navigator.share({ files: [file], title: name });
-      markBackedUp();
-      return;
+      return toast('備份完成 ✅');
     } catch (err) {
       if (err.name === 'AbortError') return;
     }
@@ -177,12 +270,22 @@ async function exportBackup() {
   const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: name });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  markBackedUp();
-}
-function markBackedUp() {
-  store.set('lastBackup', new Date().toISOString());
   toast('備份完成 ✅');
-  if (location.hash === '#/settings') renderSettings();
+}
+
+// 把一道外來的食譜（備份檔或舊版資料）存到雲端，保留原本的 id、做菜紀錄和建立時間
+async function saveImported(raw, imageBlobData) {
+  const image = imageBlobData ? (await api.upload(imageBlobData)).id : null;
+  const r = sanitize({ ...raw, image }, {
+    id: isUuid(raw.id) ? raw.id : uuid(),
+    cookLog: Array.isArray(raw.cookLog) ? raw.cookLog.filter(validDate) : [],
+    createdAt: validDate(raw.createdAt) ? raw.createdAt : undefined,
+  });
+  if (validDate(raw.updatedAt)) r.updatedAt = raw.updatedAt;
+  const old = findRecipe(r.id);
+  await cloud.save(r);
+  await cache.putRecipe(r);
+  if (old?.image && old.image !== r.image) await removeImage(old.image);
 }
 
 async function importBackup(file) {
@@ -190,28 +293,31 @@ async function importBackup(file) {
   const list = Array.isArray(data) ? data : data?.recipes; // 也接受舊版電腦版的 recipes.json
   if (!Array.isArray(list)) throw new Error('這不是食譜備份檔');
   const images = data.images || {};
-  const validDate = (s) => typeof s === 'string' && !Number.isNaN(Date.parse(s));
   let count = 0;
   for (const raw of list) {
     if (!raw || typeof raw !== 'object') continue;
-    let image = null;
     const dataUrl = images[raw.image];
-    if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
-      const blob = await (await fetch(dataUrl)).blob();
-      image = raw.image;
-      await db.putImage({ id: image, type: blob.type, data: await blob.arrayBuffer() });
-    }
-    const r = sanitize({ ...raw, image }, {
-      id: typeof raw.id === 'string' && raw.id.length <= 64 ? raw.id : uuid(),
-      cookLog: Array.isArray(raw.cookLog) ? raw.cookLog.filter(validDate) : [],
-      createdAt: validDate(raw.createdAt) ? raw.createdAt : undefined,
-    });
-    if (validDate(raw.updatedAt)) r.updatedAt = raw.updatedAt;
-    await db.putRecipe(r);
+    const blob = typeof dataUrl === 'string' && dataUrl.startsWith('data:image/') ? await (await fetch(dataUrl)).blob() : null;
+    await saveImported(raw, blob);
     count++;
   }
   await refresh();
   return count;
+}
+
+let legacyCount = 0;
+async function checkLegacy() {
+  legacyCount = (await legacy.allRecipes()).length;
+  if (legacyCount && (location.hash || '#/') === '#/') renderList();
+}
+async function migrateLegacy() {
+  for (const raw of await legacy.allRecipes()) {
+    const img = raw.image ? await legacy.getImage(raw.image) : null;
+    await saveImported(raw, img ? new Blob([img.data], { type: img.type }) : null);
+  }
+  await legacy.destroy();
+  legacyCount = 0;
+  await refresh();
 }
 
 // ---------- 狀態 ----------
@@ -219,12 +325,24 @@ let recipes = [];
 const filters = { q: '', category: '', favOnly: false, sort: 'updated' };
 
 async function refresh() {
-  recipes = await api.list();
+  recipes = await cache.allRecipes();
 }
+// 從雲端抓最新資料；有變動就回傳 true
+async function syncFromCloud() {
+  const list = await cloud.list();
+  const key = (arr) => JSON.stringify([...arr].sort((a, b) => a.id.localeCompare(b.id)));
+  const changed = key(list) !== key(recipes);
+  recipes = list;
+  await cache.replaceRecipes(list);
+  lastSync = Date.now();
+  return changed;
+}
+let lastSync = 0;
 const findRecipe = (id) => recipes.find((r) => r.id === id);
 const categories = () => [...new Set(recipes.map((r) => r.category).filter(Boolean))].sort();
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isEditing = () => /^#\/(new|edit)/.test(location.hash);
 
 // ---------- 小工具 ----------
 function toast(msg) {
@@ -232,7 +350,7 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove('show'), 2200);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
 }
 function fmtMin(n) {
   if (!n) return '';
@@ -243,6 +361,7 @@ const totalMin = (r) => (r.prepMinutes || 0) + (r.cookMinutes || 0);
 const stars = (n) => `<span class="stars">${'★'.repeat(n)}<span class="off">${'★'.repeat(5 - n)}</span></span>`;
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit' });
 const SHARE_ICON = `<svg class="share-icon" viewBox="0 0 24 24" aria-label="分享圖示"><path d="M12 3v12M7.5 7.5 12 3l4.5 4.5M8 10H6v10h12V10h-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const GOOGLE_ICON = `<svg viewBox="0 0 48 48" width="20" height="20" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>`;
 const photo = (id, alt = '') => (id ? `<img data-img="${esc(id)}" alt="${esc(alt)}" />` : '<div class="placeholder">🍽️</div>');
 
 // 份量縮放：把開頭的數字（含分數）乘上倍率，例如 "200g" → "400g"、"1/2 杯" → "1 杯"
@@ -256,6 +375,7 @@ function scaleAmount(amount, factor) {
 
 // ---------- 路由 ----------
 async function route() {
+  if (!user) return renderLogin();
   const [, page, id] = (location.hash.slice(1) || '/').split('/');
   window.scrollTo(0, 0);
   if (page === 'new') return renderForm();
@@ -271,6 +391,13 @@ function notFound() {
 // ---------- 提示橫幅 ----------
 function banners() {
   const out = [];
+  if (legacyCount) {
+    out.push(`
+      <div class="banner warn">
+        <span>📦 這台裝置上有 <b>${legacyCount} 道</b>舊版的食譜（只存在本機），要上傳到雲端同步嗎？</span>
+        <button class="btn small primary" id="migrate">上傳</button>
+      </div>`);
+  }
   if (isIOS() && !isStandalone() && !store.get('hideInstall')) {
     out.push(`
       <div class="banner" data-dismiss="hideInstall">
@@ -278,24 +405,55 @@ function banners() {
         <button class="icon-btn" aria-label="關閉">✕</button>
       </div>`);
   }
-  const days = daysSince(store.get('lastBackup'));
-  if (recipes.length >= 3 && days > 30 && (store.get('hideBackupUntil') || '') < new Date().toISOString()) {
-    out.push(`
-      <div class="banner warn" data-dismiss="hideBackupUntil">
-        <span>💾 ${days === Infinity ? '你還沒有備份過食譜' : `已經 ${days} 天沒備份了`}，資料只存在這支手機裡，<a href="#/settings">現在備份</a></span>
-        <button class="icon-btn" aria-label="稍後提醒">✕</button>
-      </div>`);
-  }
   return out.join('');
 }
 function bindBanners() {
-  $$('.banner').forEach((b) =>
+  $$('.banner[data-dismiss]').forEach((b) =>
     $('.icon-btn', b).addEventListener('click', () => {
-      const key = b.dataset.dismiss;
-      store.set(key, key === 'hideBackupUntil' ? new Date(Date.now() + 7 * 86400000).toISOString() : '1');
+      store.set(b.dataset.dismiss, '1');
       b.remove();
     }),
   );
+  $('#migrate')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = '上傳中…';
+    try {
+      const n = legacyCount;
+      await migrateLegacy();
+      toast(`已上傳 ${n} 道食譜到雲端 ✅`);
+    } catch (err) {
+      toast(`上傳失敗：${friendly(err)}`);
+    }
+    renderList();
+  });
+}
+
+// ---------- 登入頁 ----------
+function renderLogin() {
+  document.title = 'FooooooD 食譜本';
+  app.innerHTML = `
+    <div class="login">
+      <img src="icons/icon-192.png" alt="" class="login-logo" />
+      <h1>FooooooD 食譜本</h1>
+      <p>記錄你做菜的每一道食譜<br />電腦和手機自動同步</p>
+      <button class="btn google" id="google">${GOOGLE_ICON} 使用 Google 帳號登入</button>
+      <p class="small-print">只有你自己看得到你的食譜</p>
+    </div>`;
+  $('#google').onclick = async () => {
+    const { error } = await sb.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: location.origin + location.pathname, queryParams: { prompt: 'select_account' } },
+    });
+    if (error) toast(`登入失敗：${friendly(error)}`);
+  };
+}
+function renderNotConfigured() {
+  app.innerHTML = `
+    <div class="empty">
+      <div class="big">🔧</div>
+      <h2>還沒連上雲端資料庫</h2>
+      <p>請在 <code>config.js</code> 填入 Supabase 的 Project URL 和 Publishable key。</p>
+    </div>`;
 }
 
 // ---------- 列表頁 ----------
@@ -309,7 +467,7 @@ function renderList() {
         <h2>你的食譜本還是空的</h2>
         <p>把你最拿手的那道菜記下來吧！</p>
         <a class="btn primary" href="#/new">＋ 新增第一道食譜</a>
-        <p class="small-print">有備份檔？到 <a href="#/settings">⚙️ 備份</a> 匯入</p>
+        <p class="small-print">有備份檔？到 <a href="#/settings">⚙️ 設定</a> 匯入</p>
       </div>`;
     bindBanners();
     return;
@@ -574,7 +732,7 @@ function renderForm(r) {
     try {
       draft.image = (await api.upload(await resizeImage(file))).id;
     } catch (err) {
-      toast(`照片處理失敗：${err.message}`);
+      toast(`照片處理失敗：${friendly(err)}`);
     }
     $('#drop-text').textContent = '📷 點擊拍照或選擇照片';
     renderPhoto();
@@ -666,32 +824,46 @@ function renderForm(r) {
       toast('已儲存 ✅');
       location.hash = `#/recipe/${saved.id}`;
     } catch (err) {
-      toast(`儲存失敗：${err.message}`);
+      toast(`儲存失敗：${friendly(err)}`);
       $('#save').disabled = false;
     }
   });
   if (!editing && !isIOS()) $('#title').focus();
 }
 
-// ---------- 備份與設定頁 ----------
-async function renderSettings() {
-  document.title = '備份與設定 · FooooooD';
-  const last = store.get('lastBackup');
-  const persisted = await navigator.storage?.persisted?.();
+// ---------- 帳號與設定頁 ----------
+function renderSettings() {
+  document.title = '帳號與設定 · FooooooD';
+  const meta = user.user_metadata || {};
   app.innerHTML = `
     <a href="#/" class="back">← 回到食譜本</a>
     <div class="form">
-      <h1>備份與設定</h1>
+      <h1>帳號與設定</h1>
 
       <div class="panel">
-        <h2>💾 備份食譜</h2>
-        <p>你的 ${recipes.length} 道食譜和照片<b>只存在這支手機裡</b>，不會上傳到任何地方。換手機、刪掉 App 或清除 Safari 資料都會讓資料消失，所以請定期備份。</p>
-        <p class="muted">上次備份：${last ? `${fmtDate(last)}（${daysSince(last)} 天前）` : '還沒備份過'}</p>
+        <h2>👤 帳號</h2>
+        <div class="account">
+          ${meta.avatar_url ? `<img src="${esc(meta.avatar_url)}" alt="" referrerpolicy="no-referrer" />` : ''}
+          <div>
+            <b>${esc(meta.full_name || meta.name || '')}</b>
+            <div class="muted">${esc(user.email)}</div>
+          </div>
+        </div>
+        <p class="muted" style="margin-top:12px">☁️ ${recipes.length} 道食譜已同步到雲端，用同一個 Google 帳號在其他裝置登入就能看到。</p>
         <div class="actions">
-          <button class="btn primary" id="export" ${recipes.length ? '' : 'disabled'}>匯出備份檔</button>
+          <button class="btn" id="sync">🔄 立即同步</button>
+          <button class="btn danger" id="logout">登出</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>💾 備份檔</h2>
+        <p>雲端已經幫你保存資料了。如果想自己另外留一份，可以匯出備份檔；也可以把備份檔匯入到雲端。</p>
+        <div class="actions">
+          <button class="btn" id="export" ${recipes.length ? '' : 'disabled'}>匯出備份檔</button>
           <label class="btn">匯入備份檔<input type="file" accept="application/json,.json" hidden id="import" /></label>
         </div>
-        <p class="hint" style="margin-top:12px">iPhone 匯出時會跳出分享選單，建議選「儲存到檔案」存到 iCloud Drive。匯入時同一道食譜會以備份檔的內容覆蓋。</p>
+        <p class="hint" style="margin-top:12px">匯入時同一道食譜會以備份檔的內容覆蓋。</p>
       </div>
 
       ${isStandalone() ? '' : `
@@ -701,38 +873,98 @@ async function renderSettings() {
           <li>用 <b>Safari</b> 打開這個網址</li>
           <li>點畫面下方的 <b>分享</b> 按鈕 ${SHARE_ICON}</li>
           <li>往下滑，選 <b>加入主畫面</b></li>
-          <li>之後從主畫面的「食譜本」圖示打開，就是全螢幕 App，沒網路也能用</li>
+          <li>從主畫面的「食譜本」圖示打開，再用 Google 登入一次</li>
         </ol>
       </div>`}
-
-      <div class="panel">
-        <h2>ℹ️ 儲存狀態</h2>
-        <p class="muted">${persisted
-          ? '✅ 系統已同意長期保存這個 App 的資料。'
-          : '系統可能在儲存空間不足時清除資料。加入主畫面後會更穩定，但還是建議定期備份。'}</p>
-      </div>
     </div>`;
 
-  $('#export').onclick = () => exportBackup().catch((err) => toast(`匯出失敗：${err.message}`));
+  $('#sync').onclick = async () => {
+    try {
+      await syncFromCloud();
+      toast('已同步 ✅');
+      renderSettings();
+    } catch (err) {
+      toast(`同步失敗：${friendly(err)}`);
+    }
+  };
+  $('#logout').onclick = async () => {
+    if (!confirm('確定要登出嗎？這台裝置上的快取資料會被清除（雲端的資料不受影響）。')) return;
+    await sb.auth.signOut({ scope: 'local' }); // 只登出這台裝置
+  };
+  $('#export').onclick = () => exportBackup().catch((err) => toast(`匯出失敗：${friendly(err)}`));
   $('#import').onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    toast('匯入中…');
     try {
       const n = await importBackup(file);
       toast(`已匯入 ${n} 道食譜 ✅`);
       renderSettings();
     } catch (err) {
-      toast(`匯入失敗：${err.message}`);
+      toast(`匯入失敗：${friendly(err)}`);
     }
   };
 }
 
 // ---------- 啟動 ----------
+function setUser(u) {
+  user = u;
+  document.body.classList.toggle('signed-out', !u);
+}
+
+async function boot() {
+  if (!user) {
+    // 登出後清掉本機快取，避免下一個使用這台裝置的人看到
+    recipes = [];
+    imageUrls.forEach((url) => URL.revokeObjectURL(url));
+    imageUrls.clear();
+    await cache.clear().catch(() => {});
+    store.set('cacheUser', '');
+    return renderLogin();
+  }
+  if (store.get('cacheUser') !== user.id) {
+    await cache.clear().catch(() => {});
+    store.set('cacheUser', user.id);
+  }
+  await refresh(); // 先用快取秒開
+  route();
+  try {
+    if ((await syncFromCloud()) && !isEditing()) route();
+    cleanupImages().catch(() => {});
+  } catch (err) {
+    toast(`目前離線，顯示的是上次同步的資料`);
+  }
+  checkLegacy().catch(() => {});
+}
+
+// 從背景切回來時（例如在電腦上改完、拿起手機），自動抓最新資料
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !user || Date.now() - lastSync < 30000) return;
+  try {
+    if ((await syncFromCloud()) && !isEditing()) route();
+  } catch {}
+});
+
+// 按鈕操作失敗（例如沒網路）時統一顯示提示
+window.addEventListener('unhandledrejection', (e) => toast(`操作失敗：${friendly(e.reason)}`));
 window.addEventListener('hashchange', route);
-navigator.storage?.persist?.().catch(() => {});
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-refresh()
-  .then(() => { route(); cleanupImages().catch(() => {}); })
-  .catch((err) => {
-    app.innerHTML = `<div class="empty"><div class="big">⚠️</div><h2>無法開啟資料庫</h2><p>${esc(err?.message)}</p><p>如果是 Safari 無痕模式，請改用一般模式開啟。</p></div>`;
+
+(async () => {
+  if (!configured) return renderNotConfigured();
+  const { data } = await sb.auth.getSession(); // 會順便處理 Google 登入完跳回來的網址
+  if (new URLSearchParams(location.search).has('code') || location.search.includes('error')) {
+    const err = new URLSearchParams(location.search).get('error_description');
+    if (err) toast(`登入失敗：${err}`);
+    history.replaceState(null, '', location.pathname + location.hash);
+  }
+  setUser(data.session?.user ?? null);
+  sb.auth.onAuthStateChange((_event, session) => {
+    if ((session?.user?.id ?? null) === (user?.id ?? null)) return; // 同一個人（例如 token 更新）不用重來
+    setUser(session?.user ?? null);
+    boot();
   });
+  boot();
+})().catch((err) => {
+  app.innerHTML = `<div class="empty"><div class="big">⚠️</div><h2>啟動失敗</h2><p>${esc(friendly(err))}</p></div>`;
+});
