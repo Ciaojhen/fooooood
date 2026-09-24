@@ -1,0 +1,12 @@
+{
+  "name": "fooooood",
+  "version": "1.0.0",
+  "description": "記錄自己做菜食譜的本機小網站",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

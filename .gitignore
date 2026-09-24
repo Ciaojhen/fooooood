@@ -1,0 +1,5 @@
+.DS_Store
+node_modules/
+.claude/
+# 舊版電腦伺服器的資料，App 版不再使用
+data/
