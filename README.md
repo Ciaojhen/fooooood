@@ -1,4 +1,4 @@
-# 🍳 Eat, Pray, Not Burn
+# 🍳 Cook, Pray, Not Burn
 
 記錄自己做菜食譜的 iPhone 網頁 App（PWA）。可以加到主畫面、全螢幕使用，沒網路也能開。
 

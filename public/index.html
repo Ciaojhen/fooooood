@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Eat, Pray, Not Burn</title>
+  <title>Cook, Pray, Not Burn</title>
   <meta name="theme-color" content="#faf6f0" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#1c1916" media="(prefers-color-scheme: dark)" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="Eat, Pray, Not Burn" />
+  <meta name="apple-mobile-web-app-title" content="Cook, Pray, Not Burn" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icons/icon-180.png" />
@@ -17,14 +17,14 @@
 </head>
 <body>
   <header class="topbar">
-    <a href="#/" class="brand">Eat, Pray, Not Burn</a>
+    <a href="#/" class="brand" aria-label="Cook, Pray, Not Burn"><span class="w">Cook</span><span class="w">Pray</span><span>Not Burn</span></a>
     <nav>
       <a href="#/cart" class="btn ghost cart-btn" title="購物清單" aria-label="購物清單">🛒<span class="badge" id="cart-badge" hidden></span></a>
       <a href="#/settings" class="btn ghost" title="帳號與設定">⚙️<span class="wide-only"> 設定</span></a>
-      <a href="#/new" class="btn primary">＋<span class="wide-only"> 新增食譜</span></a>
     </nav>
   </header>
   <main id="app"></main>
+  <a href="#/new" class="fab" title="新增食譜" aria-label="新增食譜">＋</a>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="vendor/supabase.js"></script>
   <script src="config.js"></script>

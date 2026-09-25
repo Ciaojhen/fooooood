@@ -1,7 +1,7 @@
 // Service Worker：把 App 本身快取起來，沒網路也能開
 // 策略：先用快取秒開，同時在背景抓新版
 // 抓檔案時一律跳過瀏覽器的 HTTP 快取（GitHub Pages 預設會快取 10 分鐘），才拿得到剛上傳的新版
-const CACHE = 'fooooood-v9';
+const CACHE = 'fooooood-v10';
 const SHELL = [
   './',
   'index.html',

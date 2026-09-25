@@ -547,6 +547,7 @@ function scaleAmount(amount, factor) {
 async function route() {
   if (!user) return renderLogin();
   const [, page, id] = (location.hash.slice(1) || '/').split('/');
+  document.body.dataset.page = page || 'list';
   window.scrollTo(0, 0);
   if (page === 'new') return renderForm();
   if (page === 'settings') return renderSettings();
@@ -601,11 +602,11 @@ function bindBanners() {
 
 // ---------- 登入頁 ----------
 function renderLogin() {
-  document.title = 'Eat, Pray, Not Burn';
+  document.title = 'Cook, Pray, Not Burn';
   app.innerHTML = `
     <div class="login">
       <img src="icons/icon-192.png" alt="" class="login-logo" />
-      <h1>Eat, Pray, Not Burn</h1>
+      <h1>Cook, Pray, Not Burn</h1>
       <p>記錄你做菜的每一道食譜<br />電腦和手機自動同步</p>
       <button class="btn google" id="google">${GOOGLE_ICON} 使用 Google 帳號登入</button>
       <p class="small-print">只有你自己看得到你的食譜</p>
@@ -629,7 +630,7 @@ function renderNotConfigured() {
 
 // ---------- 列表頁 ----------
 function renderList() {
-  document.title = 'Eat, Pray, Not Burn';
+  document.title = 'Cook, Pray, Not Burn';
   if (!recipes.length) {
     app.innerHTML = `
       ${banners()}
@@ -716,7 +717,7 @@ function renderGrid() {
 
 // ---------- 詳細頁 ----------
 function renderDetail(r) {
-  document.title = `${r.title} · Eat, Pray, Not Burn`;
+  document.title = `${r.title} · Cook, Pray, Not Burn`;
   let servings = r.servings;
   const lastCooked = r.cookLog.at(-1);
 
@@ -825,7 +826,7 @@ function renderForm(r) {
         ingredients: [], steps: [], notes: '', rating: 0, favorite: false, emoji: '' };
   if (!draft.ingredients.length) draft.ingredients.push({ name: '', amount: '' });
   if (!draft.steps.length) draft.steps.push('');
-  document.title = `${editing ? '編輯' : '新增'}食譜 · Eat, Pray, Not Burn`;
+  document.title = `${editing ? '編輯' : '新增'}食譜 · Cook, Pray, Not Burn`;
 
   app.innerHTML = `
     <a href="${editing ? `#/recipe/${r.id}` : '#/'}" class="back">← 取消</a>
@@ -1033,7 +1034,7 @@ function renderForm(r) {
 
 // ---------- 購物清單頁 ----------
 function renderCart() {
-  document.title = '購物清單 · Eat, Pray, Not Burn';
+  document.title = '購物清單 · Cook, Pray, Not Burn';
   app.innerHTML = `
     <a href="#/" class="back">← 回到食譜本</a>
     <div class="cart">
@@ -1101,7 +1102,7 @@ function renderSyncNote() {
 
 // ---------- 帳號與設定頁 ----------
 function renderSettings() {
-  document.title = '帳號與設定 · Eat, Pray, Not Burn';
+  document.title = '帳號與設定 · Cook, Pray, Not Burn';
   const meta = user.user_metadata || {};
   app.innerHTML = `
     <a href="#/" class="back">← 回到食譜本</a>
@@ -1141,7 +1142,7 @@ function renderSettings() {
           <li>用 <b>Safari</b> 打開這個網址</li>
           <li>點畫面下方的 <b>分享</b> 按鈕 ${SHARE_ICON}</li>
           <li>往下滑，選 <b>加入主畫面</b></li>
-          <li>從主畫面的「Eat, Pray, Not Burn」圖示打開，再用 Google 登入一次</li>
+          <li>從主畫面的「Cook, Pray, Not Burn」圖示打開，再用 Google 登入一次</li>
         </ol>
       </div>`}
     </div>`;

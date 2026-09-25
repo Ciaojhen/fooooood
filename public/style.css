@@ -11,6 +11,7 @@
   --danger: #c0392b;
   --radius: 14px;
   --shadow: 0 1px 2px rgba(60, 40, 20, .06), 0 4px 16px rgba(60, 40, 20, .06);
+  --brand-white: var(--text);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -24,6 +25,7 @@
     --accent: #f07d45;
     --accent-soft: #43291d;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    --brand-white: #fff;
   }
 }
 
@@ -49,7 +51,12 @@ button, input, textarea, select { font: inherit; color: inherit; }
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
 }
-.brand { font-size: 1.3rem; font-weight: 800; white-space: nowrap; color: var(--accent); letter-spacing: -.2px; line-height: 1; }
+/* 標題分三行，行距收緊；Cook、Pray 白色（淺色模式用深色字，不然看不到），Not Burn 橘色 */
+.brand {
+  display: flex; flex-direction: column; font-size: 1.05rem; font-weight: 800; white-space: nowrap;
+  color: var(--accent); letter-spacing: -.2px; line-height: .95;
+}
+.brand .w { color: var(--brand-white); }
 /* emoji 縮到跟小寫 o 一樣高，底部對齊文字基線 */
 .topbar nav { display: flex; gap: 8px; }
 
@@ -109,6 +116,18 @@ main {
 .detail-hero .placeholder.chosen, .photo-drop .placeholder.chosen { font-size: 7rem; }
 .photo-drop .placeholder { position: absolute; inset: 0; }
 .btn.icon { width: 44px; height: 44px; padding: 0; font-size: 1.2rem; flex: 0 0 auto !important; }
+/* 右下角的新增按鈕：只在首頁和食譜檢視頁出現 */
+.fab {
+  position: fixed; z-index: 40;
+  right: max(20px, env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom));
+  width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: #fff; font-size: 1.9rem; line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .3); transition: transform .1s, filter .15s;
+}
+.fab:hover { filter: brightness(1.08); }
+.fab:active { transform: scale(.92); }
+body:not([data-page="list"]):not([data-page="recipe"]) .fab, body.signed-out .fab { display: none; }
+
 /* 購物清單 */
 .cart-btn { position: relative; }
 .badge {
@@ -280,7 +299,7 @@ button.photo-drop { width: 100%; font: inherit; padding: 0; }
 
 /* ---------- Toast ---------- */
 #toast {
-  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
+  position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
   background: var(--text); color: var(--bg); padding: 10px 20px; border-radius: 999px;
   opacity: 0; pointer-events: none; transition: .25s; z-index: 50;
 }
@@ -318,7 +337,7 @@ body.signed-out .topbar nav { display: none; }
   .detail-hero, .detail-body { grid-template-columns: 1fr; }
   .detail-hero { gap: 16px; margin-bottom: 20px; }
   .detail-hero h1 { font-size: 1.6rem; }
-  .brand { font-size: 1.1rem; }
+  .brand { font-size: 1rem; }
   .wide-only { display: none; }
   .topbar .btn { min-width: 42px; min-height: 38px; padding: 6px 12px; font-size: 1.05rem; }
   .grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
