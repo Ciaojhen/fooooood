@@ -64,7 +64,9 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .brand > span:last-child { margin-top: .18em; }
 .brand .w { color: var(--brand-white); }
 /* emoji 縮到跟小寫 o 一樣高，底部對齊文字基線 */
-.topbar nav { display: flex; gap: 8px; }
+.topbar nav { display: flex; gap: 2px; }
+/* 右上角：純線條圖示、沒有外框，按下時只變淡 */
+.topbar .tool:hover { background: none; opacity: .6; }
 
 main {
   max-width: 1100px; margin: 0 auto;
@@ -137,7 +139,7 @@ body:not([data-page="list"]):not([data-page="recipe"]) .fab, body.signed-out .fa
 /* 購物清單 */
 .cart-btn { position: relative; }
 .badge {
-  position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px;
+  position: absolute; top: 2px; right: 0; min-width: 18px; height: 18px; padding: 0 5px;
   border-radius: 999px; background: var(--accent); color: #fff; font-size: .7rem; font-weight: 700;
   display: grid; place-items: center; line-height: 1;
 }
