@@ -52,10 +52,16 @@ button, input, textarea, select { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 /* 標題分三行，行距收緊；Cook、Pray 白色（淺色模式用深色字，不然看不到），Not Burn 橘色 */
+/* 每一行的字級由 app.js 的 fitBrand() 自動算，讓三行一樣寬、疊成一個方塊；
+   --brand-h 是方塊的高度 */
 .brand {
-  display: flex; flex-direction: column; font-size: 1.05rem; font-weight: 800; white-space: nowrap;
-  color: var(--accent); letter-spacing: -.2px; line-height: .95;
+  --brand-h: 50px;
+  display: flex; flex-direction: column; align-items: flex-start; font-weight: 900; white-space: nowrap;
+  color: var(--accent); letter-spacing: -.02em; line-height: .86;
 }
+.brand > span { display: block; width: max-content; }
+/* Pray 的 y 有往下的尾巴，最後一行留一點空間才不會黏在一起 */
+.brand > span:last-child { margin-top: .18em; }
 .brand .w { color: var(--brand-white); }
 /* emoji 縮到跟小寫 o 一樣高，底部對齊文字基線 */
 .topbar nav { display: flex; gap: 8px; }
@@ -337,7 +343,7 @@ body.signed-out .topbar nav { display: none; }
   .detail-hero, .detail-body { grid-template-columns: 1fr; }
   .detail-hero { gap: 16px; margin-bottom: 20px; }
   .detail-hero h1 { font-size: 1.6rem; }
-  .brand { font-size: 1rem; }
+  .brand { --brand-h: 46px; }
   .wide-only { display: none; }
   .topbar .btn { min-width: 42px; min-height: 38px; padding: 6px 12px; font-size: 1.05rem; }
   .grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }

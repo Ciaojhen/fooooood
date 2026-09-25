@@ -1225,6 +1225,25 @@ window.addEventListener('online', () => { if (user) flushOutbox().catch(() => {}
 
 // 按鈕操作失敗（例如沒網路）時統一顯示提示
 window.addEventListener('unhandledrejection', (e) => toast(`操作失敗：${friendly(e.reason)}`));
+// 左上角標題：調整每一行的字級，讓 Cook / Pray / Not Burn 一樣寬，整體高度是 --brand-h
+function fitBrand() {
+  const brand = $('.brand');
+  const lines = [...brand.children];
+  const targetH = parseFloat(getComputedStyle(brand).getPropertyValue('--brand-h')) || 50;
+  const width = (el) => el.getBoundingClientRect().width;
+  // 把每一行調到同樣寬度 w。系統字體在不同字級下字形會微調（不是完全等比例），所以多修正幾輪
+  const equalize = (w) => {
+    for (let round = 0; round < 4; round++)
+      for (const line of lines) line.style.fontSize = `${(parseFloat(line.style.fontSize) || 20) * w / width(line)}px`;
+  };
+  // 先用 100px 寬量出整體高度，再換算成目標高度需要的寬度
+  equalize(100);
+  equalize(100 * targetH / brand.getBoundingClientRect().height);
+}
+fitBrand();
+document.fonts?.ready.then(fitBrand);
+matchMedia('(max-width: 760px)').addEventListener('change', fitBrand);
+
 window.addEventListener('hashchange', route);
 if ('serviceWorker' in navigator) {
   // 有新版 App 裝好時自動重新載入，不用關掉再開
