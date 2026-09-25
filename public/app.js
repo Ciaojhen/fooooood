@@ -70,10 +70,12 @@ const cloud = {
 // ---------- 本機 IndexedDB ----------
 function openIdb(name) {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(name, 1);
+    const req = indexedDB.open(name, 2);
     req.onupgradeneeded = () => {
-      req.result.createObjectStore('recipes', { keyPath: 'id' });
-      req.result.createObjectStore('images', { keyPath: 'id' }); // { id, type, data: ArrayBuffer }
+      const db = req.result;
+      if (!db.objectStoreNames.contains('recipes')) db.createObjectStore('recipes', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('images')) db.createObjectStore('images', { keyPath: 'id' }); // { id, type, data: ArrayBuffer }
+      if (!db.objectStoreNames.contains('shopping')) db.createObjectStore('shopping', { keyPath: 'id' }); // v2：購物清單
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -100,9 +102,12 @@ function idbStore(name) {
     putImage: (img) => tx(db(), 'images', 'readwrite', (s) => s.put(img)),
     deleteImage: (id) => tx(db(), 'images', 'readwrite', (s) => s.delete(id)),
     imageIds: () => tx(db(), 'images', 'readonly', (s) => s.getAllKeys()),
+    allShopping: () => tx(db(), 'shopping', 'readonly', (s) => s.getAll()),
+    putShopping: (items) => tx(db(), 'shopping', 'readwrite', (s) => { items.forEach((i) => s.put(i)); }),
+    deleteShopping: (ids) => tx(db(), 'shopping', 'readwrite', (s) => { ids.forEach((id) => s.delete(id)); }),
+    replaceShopping: (items) => tx(db(), 'shopping', 'readwrite', (s) => { s.clear(); items.forEach((i) => s.put(i)); }),
     async clear() {
-      await tx(db(), 'recipes', 'readwrite', (s) => s.clear());
-      await tx(db(), 'images', 'readwrite', (s) => s.clear());
+      for (const name of ['recipes', 'images', 'shopping']) await tx(db(), name, 'readwrite', (s) => s.clear());
     },
     async destroy() {
       (await db()).close();
@@ -321,6 +326,109 @@ async function migrateLegacy() {
   await refresh();
 }
 
+// ---------- 購物清單 ----------
+// 先改本機、馬上更新畫面，再把變更排進「待同步」佇列送到雲端。
+// 超市裡訊號不好時也能打勾，恢復連線後會自動補送。
+let shopping = [];
+const toRow = (i) => ({
+  id: i.id, name: i.name, amount: i.amount, done: i.done, recipe_id: i.recipeId || null,
+  recipe_title: i.recipeTitle, created_at: i.createdAt, updated_at: i.updatedAt,
+});
+const fromRow = (r) => ({
+  id: r.id, name: r.name, amount: r.amount, done: r.done, recipeId: r.recipe_id,
+  recipeTitle: r.recipe_title, createdAt: r.created_at, updatedAt: r.updated_at,
+});
+const outbox = {
+  get: () => { try { return JSON.parse(store.get('shopOutbox') || '[]'); } catch { return []; } },
+  set: (ops) => store.set('shopOutbox', JSON.stringify(ops)),
+};
+let flushing = null;
+let shopSyncError = ''; // 最近一次同步失敗的原因，顯示在購物清單頁
+// 同一時間只送一批，避免順序錯亂。
+// 注意：要用 .finally() 清旗標——佇列是空的時候 async 函式會同步跑完，
+// 如果在函式裡清，會發生在設定旗標之前，旗標就永遠卡住了
+function flushOutbox() {
+  flushing ??= sendOutbox().finally(() => { flushing = null; });
+  return flushing;
+}
+async function sendOutbox() {
+  try {
+    let ops;
+    while ((ops = outbox.get()).length) {
+      const op = ops[0];
+      const { error } = op.type === 'upsert'
+        ? await sb.from('shopping_items').upsert(op.items.map(toRow))
+        : await sb.from('shopping_items').delete().in('id', op.ids);
+      if (error) throw error;
+      outbox.set(outbox.get().slice(1));
+    }
+    shopSyncError = '';
+  } catch (err) {
+    shopSyncError = friendly(err);
+    throw err;
+  } finally {
+    updateCartBadge();
+    if (location.hash === '#/cart') renderSyncNote();
+  }
+}
+async function syncShopping() {
+  await flushOutbox();
+  const { data, error } = await sb.from('shopping_items').select('*').order('created_at');
+  if (error) throw error;
+  if (outbox.get().length) return false; // 同步途中又有新變更，這次先不覆蓋
+  const list = data.map(fromRow);
+  const changed = JSON.stringify(list) !== JSON.stringify(sortShopping(shopping));
+  shopping = list;
+  await cache.replaceShopping(list);
+  updateCartBadge();
+  return changed;
+}
+const sortShopping = (list) => [...list].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+async function shopChange(op) {
+  if (op.type === 'upsert') {
+    const byId = new Map(op.items.map((i) => [i.id, i]));
+    shopping = [...shopping.filter((i) => !byId.has(i.id)), ...op.items];
+    await cache.putShopping(op.items);
+  } else {
+    const ids = new Set(op.ids);
+    shopping = shopping.filter((i) => !ids.has(i.id));
+    await cache.deleteShopping(op.ids);
+  }
+  shopping = sortShopping(shopping);
+  outbox.set([...outbox.get(), op]);
+  updateCartBadge();
+  flushOutbox().catch(() => {}); // 沒網路就先留在佇列裡
+}
+const shop = {
+  add(entries) {
+    if (!entries.length) return;
+    const now = new Date().toISOString();
+    const items = entries.map((e, n) => ({
+      id: uuid(), name: e.name.trim().slice(0, 60), amount: (e.amount || '').trim().slice(0, 30), done: false,
+      recipeId: e.recipeId || null, recipeTitle: e.recipeTitle || '',
+      createdAt: new Date(Date.parse(now) + n).toISOString(), updatedAt: now, // +n 毫秒保持加入順序
+    }));
+    return shopChange({ type: 'upsert', items });
+  },
+  toggle(id) {
+    const item = shopping.find((i) => i.id === id);
+    return shopChange({ type: 'upsert', items: [{ ...item, done: !item.done, updatedAt: new Date().toISOString() }] });
+  },
+  remove: (ids) => shopChange({ type: 'delete', ids }),
+};
+// 「雞蛋 10顆」→ 名稱「雞蛋」、數量「10顆」；最後一段有數字才當作數量
+function parseShopInput(text) {
+  const m = text.trim().match(/^(.+?)\s+(\S*\d\S*)$/);
+  return m ? { name: m[1], amount: m[2] } : { name: text.trim(), amount: '' };
+}
+function updateCartBadge() {
+  const n = shopping.filter((i) => !i.done).length;
+  const badge = $('#cart-badge');
+  if (!badge) return;
+  badge.textContent = n > 99 ? '99+' : n;
+  badge.hidden = !n;
+}
+
 // ---------- 狀態 ----------
 let recipes = [];
 const filters = { q: '', category: '', favOnly: false, sort: 'updated' };
@@ -442,6 +550,7 @@ async function route() {
   window.scrollTo(0, 0);
   if (page === 'new') return renderForm();
   if (page === 'settings') return renderSettings();
+  if (page === 'cart') return renderCart();
   if (page === 'edit') return findRecipe(id) ? renderForm(findRecipe(id)) : notFound();
   if (page === 'recipe') return findRecipe(id) ? renderDetail(findRecipe(id)) : notFound();
   renderList();
@@ -648,6 +757,7 @@ function renderDetail(r) {
         </h2>
         <p class="hint">點一下可以打勾，備料時很好用</p>
         <ul class="ing-list">${r.ingredients.length ? '' : '<li style="cursor:default">（還沒有填食材）</li>'}</ul>
+        ${r.ingredients.length ? '<button class="btn small to-cart" id="to-cart">🛒 食材加入購物清單</button>' : ''}
       </div>
       <div class="panel">
         <h2>步驟</h2>
@@ -671,6 +781,15 @@ function renderDetail(r) {
   renderIngredients();
 
   $('.ing-list').addEventListener('click', (e) => e.target.closest('li')?.classList.toggle('done'));
+  $('#to-cart')?.addEventListener('click', async () => {
+    // 照目前選的份量換算；清單裡已經有、還沒買的同名食材就跳過
+    const factor = r.servings ? servings / r.servings : 1;
+    const pending = new Set(shopping.filter((i) => !i.done).map((i) => i.name));
+    const toAdd = r.ingredients.filter((i) => !pending.has(i.name));
+    await shop.add(toAdd.map((i) => ({ name: i.name, amount: scaleAmount(i.amount, factor), recipeId: r.id, recipeTitle: r.title })));
+    const skipped = r.ingredients.length - toAdd.length;
+    toast(toAdd.length ? `🛒 已加入 ${toAdd.length} 項${skipped ? `（${skipped} 項已在清單中）` : ''}` : '這些食材都已經在購物清單裡了');
+  });
   $('.step-list').addEventListener('click', (e) => e.target.closest('li')?.classList.toggle('done'));
   if (r.servings) {
     $('#less').onclick = () => { if (servings > 1) { servings--; renderIngredients(); } };
@@ -912,6 +1031,74 @@ function renderForm(r) {
   if (!editing && !isIOS()) $('#title').focus();
 }
 
+// ---------- 購物清單頁 ----------
+function renderCart() {
+  document.title = '購物清單 · Eat, Pray, Not Burn';
+  app.innerHTML = `
+    <a href="#/" class="back">← 回到食譜本</a>
+    <div class="cart">
+      <h1>🛒 購物清單</h1>
+      <form class="cart-add" autocomplete="off">
+        <input id="cart-input" placeholder="要買什麼？例如：雞蛋 10顆" enterkeyhint="done" maxlength="90" />
+        <button class="btn primary" aria-label="加入">加入</button>
+      </form>
+      <p class="sync-note" id="sync-note" hidden></p>
+      <div id="cart-list"></div>
+    </div>`;
+  $('.cart-add').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = $('#cart-input');
+    if (!input.value.trim()) return;
+    await shop.add([parseShopInput(input.value)]);
+    input.value = '';
+    input.focus(); // 連續輸入不用再點一次
+    renderCartList();
+  });
+  $('#cart-list').addEventListener('click', async (e) => {
+    const row = e.target.closest('[data-id]');
+    if (e.target.closest('.del')) await shop.remove([row.dataset.id]);
+    else if (row) await shop.toggle(row.dataset.id);
+    else if (e.target.closest('#clear-done')) {
+      const done = shopping.filter((i) => i.done);
+      if (!confirm(`清除 ${done.length} 項已買的東西？`)) return;
+      await shop.remove(done.map((i) => i.id));
+    } else return;
+    renderCartList();
+  });
+  renderCartList();
+  renderSyncNote();
+}
+function renderCartList() {
+  const todo = shopping.filter((i) => !i.done);
+  const done = shopping.filter((i) => i.done);
+  const row = (i) => `
+    <li data-id="${i.id}" class="${i.done ? 'done-item' : ''}">
+      <span class="check-circle" aria-hidden="true">${i.done ? '✓' : ''}</span>
+      <span class="item-text">
+        <span class="item-name">${esc(i.name)}</span>
+        ${i.amount ? `<span class="item-amt">${esc(i.amount)}</span>` : ''}
+        ${i.recipeTitle ? `<span class="item-from">${esc(i.recipeTitle)}</span>` : ''}
+      </span>
+      <button class="icon-btn del" aria-label="刪除 ${esc(i.name)}">✕</button>
+    </li>`;
+  $('#cart-list').innerHTML = shopping.length
+    ? `
+      <ul class="cart-items">${todo.map(row).join('') || '<li class="all-done">全部買齊了 🎉</li>'}</ul>
+      ${done.length ? `
+        <div class="done-header"><span>已買 ${done.length} 項</span><button class="btn small" id="clear-done">清除已買</button></div>
+        <ul class="cart-items">${done.map(row).join('')}</ul>` : ''}`
+    : `<div class="empty"><div class="big">🧺</div><p>購物清單是空的<br />在上面輸入，或到食譜裡按「🛒 食材加入購物清單」</p></div>`;
+}
+function renderSyncNote() {
+  const n = outbox.get().length;
+  const note = $('#sync-note');
+  if (!note) return;
+  note.hidden = !n;
+  note.textContent = shopSyncError === friendly(new Error('fetch'))
+    ? `☁️ 目前離線，有 ${n} 筆變更會在恢復連線後自動同步`
+    : `⚠️ 有 ${n} 筆變更還沒同步到雲端：${shopSyncError || '同步中…'}`;
+}
+
 // ---------- 帳號與設定頁 ----------
 function renderSettings() {
   document.title = '帳號與設定 · Eat, Pray, Not Burn';
@@ -999,15 +1186,20 @@ async function boot() {
     recipes = [];
     imageUrls.forEach((url) => URL.revokeObjectURL(url));
     imageUrls.clear();
+    shopping = [];
     await cache.clear().catch(() => {});
     store.set('cacheUser', '');
+    outbox.set([]);
     return renderLogin();
   }
   if (store.get('cacheUser') !== user.id) {
     await cache.clear().catch(() => {});
     store.set('cacheUser', user.id);
+    outbox.set([]);
   }
   await refresh(); // 先用快取秒開
+  shopping = sortShopping(await cache.allShopping());
+  updateCartBadge();
   route();
   try {
     if ((await syncFromCloud()) && !isEditing()) route();
@@ -1015,6 +1207,7 @@ async function boot() {
   } catch (err) {
     toast(`目前離線，顯示的是上次同步的資料`);
   }
+  syncShopping().then((changed) => { if (changed && location.hash === '#/cart') renderCartList(); }).catch(() => {});
   checkLegacy().catch(() => {});
 }
 
@@ -1023,8 +1216,11 @@ document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !user || Date.now() - lastSync < 30000) return;
   try {
     if ((await syncFromCloud()) && !isEditing()) route();
+    if ((await syncShopping()) && location.hash === '#/cart') renderCartList();
   } catch {}
 });
+// 恢復連線時，把離線時的購物清單變更送出去
+window.addEventListener('online', () => { if (user) flushOutbox().catch(() => {}); });
 
 // 按鈕操作失敗（例如沒網路）時統一顯示提示
 window.addEventListener('unhandledrejection', (e) => toast(`操作失敗：${friendly(e.reason)}`));

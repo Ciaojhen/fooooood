@@ -7,7 +7,8 @@
 用 Google 帳號登入後，食譜和照片存在 **Supabase** 雲端資料庫，電腦和手機自動同步。
 每台裝置也會留一份快取，沒網路時可以看食譜（但新增和修改需要網路）。
 
-- 資料庫設定：`supabase/setup.sql`（在 Supabase 的 SQL Editor 執行）
+- 資料庫設定：`supabase/setup.sql`（新專案在 Supabase 的 SQL Editor 執行一次即可）
+- 已經在用的專案要加上購物清單：執行 `supabase/002_shopping.sql`
 - 連線設定：`public/config.js`（只放 Project URL 和 Publishable key，**不要放 secret key**）
 
 ## 在電腦上預覽
